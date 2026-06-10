@@ -7,7 +7,9 @@
 // except point you at the download.
 //
 // Wire contract (the app side pins this; add fields, never rename):
-//   {"cmd":"speak","shape":"text"|"file"|"clipboard","value":"..."}\n
+//   {"proto":1,"cmd":"speak","shape":"text"|"file"|"clipboard","value":"..."}\n
+// `proto:1` is required: the app's IPC server rejects frames whose proto
+// is absent or unknown (IPCServer.handleLine), same as every other sender.
 //
 // Usage:
 //   tts.js "read this sentence"          one text item
@@ -61,29 +63,40 @@ function parseArgs(argv) {
   return items;
 }
 
+// Stream stdin instead of fs.readFileSync(0): touching process.stdin puts
+// fd 0 in non-blocking mode, so a sync read EAGAINs as soon as the pipe
+// buffer drains (anything over ~64 KiB from a still-writing producer) and
+// the reply would silently read as empty.
 function readStdin() {
-  try {
-    return fs.readFileSync(0, "utf8");
-  } catch {
-    return "";
-  }
+  return new Promise((resolve) => {
+    let buf = "";
+    process.stdin.setEncoding("utf8");
+    process.stdin.on("data", (d) => {
+      buf += d;
+    });
+    process.stdin.on("end", () => resolve(buf));
+    process.stdin.on("error", () => resolve(buf));
+  });
 }
 
 function connectOnce(timeoutMs) {
   return new Promise((resolve, reject) => {
     const sock = net.connect(SOCKET_PATH);
+    const onError = (err) => {
+      clearTimeout(timer);
+      reject(err);
+    };
     const timer = setTimeout(() => {
       sock.destroy();
       reject(new Error("timeout"));
     }, timeoutMs);
     sock.once("connect", () => {
       clearTimeout(timer);
+      // Hand a listener-free socket back; the caller owns errors from here.
+      sock.removeListener("error", onError);
       resolve(sock);
     });
-    sock.once("error", (err) => {
-      clearTimeout(timer);
-      reject(err);
-    });
+    sock.once("error", onError);
   });
 }
 
@@ -93,11 +106,14 @@ async function connectWithLaunch() {
   } catch {
     /* fall through to launch */
   }
-  // The app may simply not be running. `open` is a no-op-ish failure when
-  // it isn't installed; we just keep polling the socket either way.
+  // The app may simply not be running; ask LaunchServices to start it in
+  // the background. If BOTH launch attempts fail, the app is not installed
+  // (or `open` is unavailable): polling cannot succeed, so fail fast to
+  // the install pointer instead of burning the 10s deadline.
   const byId = spawnSync("open", ["-g", "-b", APP_BUNDLE_ID], { stdio: "ignore" });
   if (byId.status !== 0) {
-    spawnSync("open", ["-g", "-a", "aiTTS"], { stdio: "ignore" });
+    const byName = spawnSync("open", ["-g", "-a", "aiTTS"], { stdio: "ignore" });
+    if (byName.status !== 0) return null;
   }
   const deadline = Date.now() + 10_000;
   while (Date.now() < deadline) {
@@ -113,7 +129,7 @@ async function connectWithLaunch() {
 async function main() {
   let items = parseArgs(process.argv.slice(2));
   if (items.length === 0 && !process.stdin.isTTY) {
-    const piped = readStdin().trim();
+    const piped = (await readStdin()).trim();
     if (piped) items = [{ shape: "text", value: piped }];
   }
   if (items.length === 0) {
@@ -129,17 +145,62 @@ async function main() {
     }
   }
 
+  // Serialize up front so oversize input fails BEFORE we connect or launch
+  // the app. The app's IPC server detaches any client that accumulates
+  // 1 MiB without a newline (DOS bound), and macOS gives the writer no
+  // error when that happens, so an oversize frame would be silently
+  // dropped while we print success. ~1 MiB of text is hours of speech;
+  // long content belongs in a file.
+  const frames = items.map(
+    (item) =>
+      JSON.stringify({
+        proto: 1,
+        cmd: "speak",
+        shape: item.shape,
+        value: item.value,
+      }) + "\n",
+  );
+  const MAX_FRAME_BYTES = 1 << 20;
+  for (const f of frames) {
+    if (Buffer.byteLength(f, "utf8") >= MAX_FRAME_BYTES) {
+      process.stderr.write(
+        "tts: text too long to send (over 1 MB); save it to a file and use --file\n",
+      );
+      process.exit(2);
+    }
+  }
+
   const sock = await connectWithLaunch();
   if (!sock) {
     process.stderr.write(INSTALL_MESSAGE);
     process.exit(1);
   }
 
-  for (const item of items) {
-    sock.write(
-      JSON.stringify({ cmd: "speak", shape: item.shape, value: item.value }) +
-        "\n",
+  // A connection error after connect (app quit mid-write, dropped peer)
+  // must fail loudly: without a listener Node throws an unhandled 'error',
+  // and a swallowed one would let the process exit 0 having sent nothing.
+  sock.on("error", (err) => {
+    process.stderr.write(
+      `tts: connection to aiTTS lost: ${(err && (err.code || err.message)) || err}\n`,
     );
+    process.exit(1);
+  });
+  // Best-effort drop detection: the app never half-closes mid-request (it
+  // reads until OUR EOF), so a FIN before our flush completes means it
+  // dropped us. Note macOS usually discards writes to a dropped unix-socket
+  // peer silently (no EPIPE, FIN often loses the race to the flush), so
+  // delivery is ultimately fire-and-forget; this only catches the orderings
+  // the kernel lets us see. On the success path the flush callback below
+  // exits first.
+  sock.on("end", () => {
+    process.stderr.write(
+      "tts: aiTTS closed the connection before accepting the request\n",
+    );
+    process.exit(1);
+  });
+
+  for (const f of frames) {
+    sock.write(f);
   }
   sock.end(() => {
     process.stdout.write(

@@ -71,8 +71,11 @@ shim only forwards.
   text, and pipe it as text. Do NOT pass URLs to the shim; it has no fetcher
   on purpose.
 
-- **Multiple items** -> send them in the order given; combine flags freely,
-  e.g. `node "$SKILL_DIR/tts.js" --file "/a.pdf" "and then this remark"`.
+- **Multiple items** -> combine flags freely. `--file` and `--clipboard`
+  items play in the order given; all bare text is joined into ONE item
+  that plays last, e.g.
+  `node "$SKILL_DIR/tts.js" --file "/a.pdf" "and then this remark"`.
+  If something must play before a file, send it as a separate invocation.
 
 ## Phase 2: report
 
