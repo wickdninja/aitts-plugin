@@ -1,0 +1,13 @@
+{
+  "name": "tts",
+  "version": "2.0.0",
+  "description": "Read content aloud with /tts via the aiTTS Mac app: a file, URL, image, PDF, pasted text, or this session's last reply. This plugin is the app's remote control; synthesis, voices, and continuous session narration live in the app (aitts.dev).",
+  "author": {
+    "name": "Nate Ross",
+    "url": "https://aitts.dev"
+  },
+  "homepage": "https://aitts.dev",
+  "repository": "https://github.com/wickdninja/aitts-plugin",
+  "license": "MIT",
+  "keywords": ["tts", "text-to-speech", "narration", "macos", "claude-code", "aitts"]
+}

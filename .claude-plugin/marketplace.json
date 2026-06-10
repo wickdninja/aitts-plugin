@@ -1,0 +1,20 @@
+{
+  "name": "aitts",
+  "owner": {
+    "name": "Nate Ross",
+    "email": "nate@aitts.dev"
+  },
+  "metadata": {
+    "description": "aiTTS, text-to-speech for Claude Code (aitts.dev)",
+    "version": "2.0.0"
+  },
+  "plugins": [
+    {
+      "name": "tts",
+      "source": ".",
+      "description": "Read content aloud with /tts via the aiTTS Mac app (file, URL, image, PDF, text, or this session's last reply). Remote control for the app; get it at aitts.dev.",
+      "version": "2.0.0",
+      "category": "productivity"
+    }
+  ]
+}
